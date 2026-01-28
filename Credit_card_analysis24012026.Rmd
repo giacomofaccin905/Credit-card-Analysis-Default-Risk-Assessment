@@ -1,0 +1,497 @@
+---
+title: "Machine Learning Models for Credit Card Default Risk Assessment"
+author: "Faccin  Giacomo"
+date: "2026-01-24"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr) 
+```
+
+
+## Data Dawnload
+
+```{r Data dawnload}
+
+credit_card_balanced<-read.csv("credit_card_balance.csv")
+bureau_data<-read.csv("bureau.csv")
+application_train_data<-read.csv("application_train.csv")
+
+Description_VAR<-read.csv("HomeCredit_columns_description.csv")
+
+```
+
+
+## Data Marging 
+
+We've aggregated the observations on the data set *bereau_data* because it collected the observation with more rows for the same client.
+
+```{r Merging data bureau, echo=FALSE}
+# summing the rows for each ID
+
+new_bureau<-bureau_data%>%
+  group_by(SK_ID_CURR)%>%
+  summarise(n_loans=n(),
+            Total_credit=sum(AMT_CREDIT_SUM),na.rm=TRUE,
+            Total_debt=sum(AMT_CREDIT_SUM_DEBT),na.rm=TRUE,
+            Max_overdue = max(CREDIT_DAY_OVERDUE, na.rm = TRUE),
+            Mean_overdue = mean(CREDIT_DAY_OVERDUE, na.rm = TRUE))
+
+```
+
+We've applied the same logic structure to the data set *credit_card_balanced*. We've aggregate by the variable *SK_ID_CURR*, created a new variable 
+
+
+```{r Merging data credit_card_balanced}
+
+new_balanced_card<-credit_card_balanced%>%
+   mutate(
+    utilization_ratio = AMT_BALANCE / AMT_CREDIT_LIMIT_ACTUAL
+   )%>%
+  group_by(SK_ID_CURR)%>%
+  summarise(mean_balance = mean(AMT_BALANCE, na.rm = TRUE),
+    Max_balance = max(AMT_BALANCE, na.rm = TRUE),
+    Mean_utilization = mean(utilization_ratio, na.rm = TRUE),
+    Max_dpd = max(SK_DPD, na.rm = TRUE),
+    Mean_dpd = mean(SK_DPD, na.rm = TRUE))
+
+```
+
+Here it can be observed the following data sets *new_balanced_card*, *new_bureau* and *application_train_data* have been merged.
+
+```{r Marging all Data sets}
+
+Data_set<-application_train_data%>%
+  left_join(new_bureau, by = "SK_ID_CURR") %>%
+  left_join(new_balanced_card, by = "SK_ID_CURR")
+
+```
+
+
+In this case we do a strong assumption if the observation is NA means there isn't exposition therefore is NA = 0.
+
+we've implemented a little check on the following DF.
+
+
+```{r}
+# To no the number 
+table(Data_set$TARGET)
+
+
+#data set dimension
+
+dim(Data_set)
+
+```
+
+```{r}
+Data_set<-Data_set%>%
+  mutate(across(where(is.numeric), ~ replace_na(., 0)))
+
+```
+
+## EDA
+
+The variable target has been investigated with a bar plot, it pretty evident that there is a problem of *Class Imbalance*.
+
+
+```{r}
+ggplot(Data_set)+
+  geom_bar(aes(x=TARGET))
+```
+
+
+
+
+The variable *AMT_INCOME_TOTAL* had been explored before it was analyzed to under how it was distributed. 
+
+```{r}
+
+library(scales)
+ggplot(Data_set) +
+  geom_boxplot(aes(y = AMT_INCOME_TOTAL), fill = "lightblue") +
+  scale_y_log10() +
+  labs(title = "Total Income Boxplot  (log scale)", y = "AMT_INCOME_TOTAL")
+```
+
+There are couple of outliers in the range 3 to 6 million of dollars. 
+
+```{r}
+ggplot(Data_set)+
+  geom_bar(aes(x=NAME_CONTRACT_TYPE,col="blues9"))
+
+```
+
+
+# Splitting the the data set in training set and data set 
+
+```{r splitting the data set}
+set.seed(123)
+index<-sample(x=1:nrow(Data_set), size = 0.7*nrow(Data_set))
+
+training_set<-Data_set[index,]
+
+test_set<-Data_set[-index,]
+
+```
+
+check training set and data set 
+
+```{r Fast check on the rows}
+nrow(training_set)+nrow(test_set)
+
+nrow(Data_set)
+```
+A possible solution for the imbalance problem with the target balance is to created a balanced training set with all default and ad not default quantity of them.
+
+```{r}
+table(training_set$TARGET)
+prop.table(table(training_set$TARGET))
+
+```
+
+
+
+
+
+```{r Sampling the training set balnced }
+
+## we've split the training by target variable =0 or =1
+train0<-training_set[training_set$TARGET==0,]
+
+train1<-training_set[training_set$TARGET==1,]
+
+set.seed(123)
+
+index_0<-sample(x=1:nrow(train0), size= nrow(train1))
+
+train_sample_0<-train0[index_0,]
+
+## The official training balanced has been created to solve the imbalance class
+training_balanced_set<-rbind(train_sample_0,train1)
+
+# small check on the proportion 
+nrow(training_balanced_set)
+
+prop.table(table(training_balanced_set$TARGET))
+
+
+```
+
+
+
+# Scaling the variable to smooth the effect of the outliers 
+
+To address the presence of skewed distributions and negative values in selected numerical variables, a Yeo–Johnson transformation was applied using the caret preprocessing framework. The transformation parameters were estimated exclusively on the training set and subsequently applied to the test set, thereby ensuring consistency and preventing data leakage. This approach allows for variance stabilization and reduces the influence of extreme values while accommodating non-positive observations
+
+
+```{r The First scaling with caret}
+library(caret)
+
+pp <- preProcess(
+  training_balanced_set[, c("Total_debt", "mean_balance")],
+  method = "YeoJohnson"
+)
+
+training_balanced_set[, c("Total_debt", "mean_balance")] <-
+  predict(pp, training_balanced_set[, c("Total_debt", "mean_balance")])
+
+test_set[, c("Total_debt", "mean_balance")] <-
+  predict(pp, test_set[, c("Total_debt", "mean_balance")])
+
+
+```
+
+The following variable, AMT_INCOME_TOTAL, AMT_CREDIT and AMT_ANNUITY, have been scaled to reduce the influence of extreme values, the principal monetary variables were log-transformed using the natural logarithm of one plus the variable (log1p).
+
+
+```{r scalining variables}
+
+# scaling with log for training set
+training_balanced_set$AMT_INCOME_TOTAL<-log1p(training_balanced_set$AMT_INCOME_TOTAL)
+training_balanced_set$AMT_CREDIT<-log1p(training_balanced_set$AMT_CREDIT)
+training_balanced_set$AMT_ANNUITY<-log1p(training_balanced_set$AMT_ANNUITY)
+training_balanced_set$Total_credit<-log1p(training_balanced_set$Total_credit)
+
+
+training_balanced_set$Mean_overdue<-log1p(training_balanced_set$Mean_overdue)
+training_balanced_set$Mean_utilization<-log1p(training_balanced_set$Mean_utilization)
+training_balanced_set$Mean_dpd<-log1p(training_balanced_set$Mean_dpd)
+
+
+# scaling with log for test set
+test_set$AMT_INCOME_TOTAL<-log1p(test_set$AMT_INCOME_TOTAL)
+test_set$AMT_CREDIT<-log1p(test_set$AMT_CREDIT)
+test_set$AMT_ANNUITY<-log1p(test_set$AMT_ANNUITY)
+test_set$Total_credit<-log1p(test_set$Total_credit)
+
+
+test_set$Mean_overdue<-log1p(test_set$Mean_overdue)
+test_set$Mean_utilization<-log1p(test_set$Mean_utilization)
+test_set$Mean_dpd<-log1p(test_set$Mean_dpd)
+
+```
+
+# The implemantation of the model
+
+```{r}
+library(randomForest)
+library(xgboost)
+
+# WE remove all NA from training set and test set 
+
+
+
+
+
+# Solo per training e test set
+training_balanced_set <- training_balanced_set[!is.na(training_balanced_set$TARGET), ]
+test_set <- test_set[!is.na(test_set$TARGET), ]
+
+
+# Converti in fattore dopo
+training_balanced_set$TARGET <- as.factor(training_balanced_set$TARGET)
+test_set$TARGET <- as.factor(test_set$TARGET)
+
+
+table(test_set$TARGET)
+table(training_balanced_set$TARGET)
+
+## here we implement the random forest
+
+RF_MODEL<-randomForest(TARGET ~ EXT_SOURCE_1 + EXT_SOURCE_2 + EXT_SOURCE_3 +
+           AMT_INCOME_TOTAL + AMT_CREDIT + AMT_ANNUITY +
+           DAYS_BIRTH + DAYS_EMPLOYED +
+           NAME_CONTRACT_TYPE + CODE_GENDER + NAME_EDUCATION_TYPE + NAME_FAMILY_STATUS +
+           FLAG_OWN_CAR + FLAG_OWN_REALTY + CNT_CHILDREN +
+           REGION_POPULATION_RELATIVE,
+  data = training_balanced_set,
+  ntree = 500,
+  mtry = 3,)
+
+```
+
+
+```{r Y hat creation}
+y_hat_RF<-predict(RF_MODEL,test_set, type = "response")
+
+confusionMatrix(as.factor(y_hat_RF),test_set$TARGET, positive = "1") 
+
+MISCLASSRATE<-mean(y_hat_RF!=test_set$TARGET)
+MISCLASSRATE
+```
+```{r}
+# Lista delle colonne da controllare
+vars_to_check <- c("Total_credit", "Total_debt", "Mean_dpd", "Mean_utilization", "Mean_overdue")
+
+# Controllo NAs
+sapply(training_balanced_set[ , vars_to_check], function(x) sum(is.na(x)))
+
+# Controllo Inf o -Inf
+sapply(training_balanced_set[ , vars_to_check], function(x) sum(!is.finite(x)))
+
+
+
+```
+
+## second model RAndom forest
+
+```{r The second random forest}
+
+
+RF_MODEL_2 <- randomForest(
+  TARGET ~ EXT_SOURCE_1 + EXT_SOURCE_2 + EXT_SOURCE_3 +
+    AMT_INCOME_TOTAL + AMT_CREDIT + AMT_ANNUITY + Total_credit + Total_debt + Mean_dpd + Mean_overdue +
+    DAYS_BIRTH + DAYS_EMPLOYED +
+    NAME_CONTRACT_TYPE + CODE_GENDER + NAME_EDUCATION_TYPE + NAME_FAMILY_STATUS +
+    FLAG_OWN_CAR + FLAG_OWN_REALTY + CNT_CHILDREN +
+    REGION_POPULATION_RELATIVE,
+  data = training_balanced_set,
+  ntree = 500,
+  mtry = 3
+)
+
+```
+
+
+
+```{r}
+# Tutti i nomi delle colonne
+all_vars <- colnames(training_balanced_set)
+
+# Stampa per controllare
+print(all_vars)
+
+```
+
+
+
+
+
+```{r Y hat creation 2}
+y_hat_RF2<-predict(RF_MODEL_2, test_set, type = "response")
+
+CFM_RF_2<-confusionMatrix(as.factor(y_hat_RF2),test_set$TARGET)
+
+CFM_RF_2
+
+varImpPlot(RF_MODEL_2)
+```
+
+```{r}
+
+
+training_balanced_set$debt_ratio <- training_balanced_set$Total_debt / training_balanced_set$Total_credit
+training_balanced_set$annuity_ratio <- training_balanced_set$AMT_ANNUITY / training_balanced_set$AMT_CREDIT
+training_balanced_set$age_years <- -training_balanced_set$DAYS_BIRTH / 365
+training_balanced_set$employment_years <- training_balanced_set$DAYS_EMPLOYED / 365
+
+# 2 managing the NA
+num_vars <- c("Total_credit", "Total_debt", "AMT_CREDIT", "AMT_ANNUITY",
+              "debt_ratio", "annuity_ratio", "age_years", "employment_years")
+
+training_balanced_set[num_vars] <- lapply(training_balanced_set[num_vars], function(x) {
+  x[is.na(x) | !is.finite(x)] <- median(x, na.rm = TRUE)
+  x
+})
+
+#  feature sul test set
+test_set$debt_ratio <- test_set$Total_debt / test_set$Total_credit
+test_set$annuity_ratio <- test_set$AMT_ANNUITY / test_set$AMT_CREDIT
+test_set$age_years <- -test_set$DAYS_BIRTH / 365
+test_set$employment_years <- test_set$DAYS_EMPLOYED / 365
+
+# new features
+num_vars_test <- c("Total_credit", "Total_debt", "AMT_CREDIT", "AMT_ANNUITY",
+                   "debt_ratio", "annuity_ratio", "age_years", "employment_years")
+
+test_set[num_vars_test] <- lapply(test_set[num_vars_test], function(x) {
+  x[is.na(x) | !is.finite(x)] <- median(x, na.rm = TRUE)  # mediana calcolata sul test set
+  x
+})
+
+
+if("TARGET" %in% colnames(test_set)){
+  test_set$TARGET <- as.factor(test_set$TARGET)
+}
+
+```
+
+```{r random forest model 3}
+RF_MODEL_3<- randomForest(TARGET  ~ EXT_SOURCE_1 + EXT_SOURCE_2 + EXT_SOURCE_3 +
+    AMT_INCOME_TOTAL + AMT_CREDIT + AMT_ANNUITY + Total_credit + Total_debt + Mean_dpd + Mean_overdue +
+    DAYS_BIRTH +NAME_CONTRACT_TYPE + CODE_GENDER + NAME_EDUCATION_TYPE + NAME_FAMILY_STATUS +
+    FLAG_OWN_CAR + FLAG_OWN_REALTY + CNT_CHILDREN +debt_ratio+annuity_ratio+age_years+employment_years+
+    REGION_POPULATION_RELATIVE,
+  data = training_balanced_set,
+  ntree= 500,
+  mtry= 3,
+  )
+```
+
+```{r}
+y_hat_RF3<-predict(RF_MODEL_3,test_set, type="response")
+
+CFM_RF_3<-confusionMatrix(as.factor(y_hat_RF3),test_set$TARGET)
+```
+
+
+```{r}
+CFM_RF_3
+varImpPlot(RF_MODEL_3)
+
+```
+## XGBoost
+
+we try to use this algoritmic 
+
+```{r}
+
+library(Matrix)
+
+feature_vars <- c("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3",
+                  "AMT_INCOME_TOTAL", "AMT_CREDIT", "AMT_ANNUITY",
+                  "Total_credit", "Total_debt", "Mean_dpd", "Mean_overdue",
+                  "DAYS_BIRTH", "NAME_CONTRACT_TYPE", "CODE_GENDER", 
+                  "NAME_EDUCATION_TYPE", "NAME_FAMILY_STATUS",
+                  "FLAG_OWN_CAR", "FLAG_OWN_REALTY", "CNT_CHILDREN",
+                  "debt_ratio", "annuity_ratio", "age_years", "employment_years",
+                  "REGION_POPULATION_RELATIVE")
+train_matrix <- sparse.model.matrix(
+  TARGET ~ .,
+  data = training_balanced_set[, c(feature_vars, "TARGET")]
+)
+
+train_label <- as.numeric(training_balanced_set$TARGET) - 1  # 0/1
+
+# Se hai il test set:
+test_matrix <- sparse.model.matrix(
+  ~ .,
+  data = test_set[, feature_vars]
+)
+if("TARGET" %in% colnames(test_set)){
+  test_label <- as.numeric(test_set$TARGET) - 1
+}
+
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+if(exists("test_label")){
+  dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
+}else{
+  dtest <- xgb.DMatrix(data = test_matrix)
+}
+
+params <- list(
+  booster = "gbtree",
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  eta = 0.05,
+  max_depth = 6,
+  min_child_weight = 1,
+  subsample = 0.8,
+  colsample_bytree = 0.8
+)
+
+set.seed(123)
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 1000,
+  watchlist = list(train = dtrain),
+  early_stopping_rounds = 50,
+  print_every_n = 20
+)
+
+```
+```{r}
+pred_prob <- predict(xgb_model, dtest)
+
+if(exists("test_label")){
+  pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+  accuracy <- mean(pred_class == test_label)
+  print(paste("Accuracy:", round(accuracy, 4)))
+}
+
+importance <- xgb.importance(model = xgb_model)
+xgb.plot.importance(importance)
+```
+
+```{r}
+pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+pred_class <- factor(pred_class, levels = c(0,1))
+test_label_factor <- factor(test_label, levels = c(0,1))
+
+
+conf_matrix <- confusionMatrix(pred_class, test_label_factor, positive = "1")
+print(conf_matrix)
+```
+
+
+
+
