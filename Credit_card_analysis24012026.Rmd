@@ -13,6 +13,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(dplyr)
 library(ggplot2)
 library(tidyr) 
+library(pROC)
 ```
 
 
@@ -95,21 +96,15 @@ dim(Data_set)
 Data_set<-Data_set%>%
   mutate(across(where(is.numeric), ~ replace_na(., 0)))
 
+str(Data_set$TARGET)
+
+
+
 ```
 
 ## EDA
 
 The variable target has been investigated with a bar plot, it pretty evident that there is a problem of *Class Imbalance*.
-
-
-```{r}
-ggplot(Data_set)+
-  geom_bar(aes(x=TARGET))
-```
-
-
-
-
 The variable *AMT_INCOME_TOTAL* had been explored before it was analyzed to under how it was distributed. 
 
 ```{r}
@@ -122,13 +117,6 @@ ggplot(Data_set) +
 ```
 
 There are couple of outliers in the range 3 to 6 million of dollars. 
-
-```{r}
-ggplot(Data_set)+
-  geom_bar(aes(x=NAME_CONTRACT_TYPE,col="blues9"))
-
-```
-
 
 # Splitting the the data set in training set and data set 
 
@@ -241,22 +229,24 @@ test_set$Mean_dpd<-log1p(test_set$Mean_dpd)
 
 # The implemantation of the model
 
+The first model was built using the Random Forest algorithm, due to its robustness and its ability to handle datasets containing some degree of noise. Random Forest is particularly effective in reducing overfitting by aggregating the predictions of multiple decision trees, which makes it a strong choice for tabular data such as credit card default datasets.
+
+The model was specified with the following formula:
+
+*TARGET ~ EXT_SOURCE_1 + EXT_SOURCE_2 + EXT_SOURCE_3 + AMT_INCOME_TOTAL + AMT_CREDIT + AMT_ANNUITY + DAYS_BIRTH + DAYS_EMPLOYED + NAME_CONTRACT_TYPE + CODE_GENDER + NAME_EDUCATION_TYPE + NAME_FAMILY_STATUS + FLAG_OWN_CAR + FLAG_OWN_REALTY + CNT_CHILDREN + REGION_POPULATION_RELATIVE*
+
+We decided to use 500 trees in the ensemble to achieve more stable and accurate predictions. Increasing the number of trees generally improves the model’s ability to generalize by reducing variance, while still maintaining interpretability through feature importance analysis.
+Additionally, Random Forest allows us to rank features according to their predictive power, which is particularly useful in credit scoring applications. This provides insights into which customer attributes—such as external credit scores or income levels—have the greatest influence on default risk.
+
 ```{r}
 library(randomForest)
 library(xgboost)
-
-# WE remove all NA from training set and test set 
-
-
-
-
 
 # Solo per training e test set
 training_balanced_set <- training_balanced_set[!is.na(training_balanced_set$TARGET), ]
 test_set <- test_set[!is.na(test_set$TARGET), ]
 
-
-# Converti in fattore dopo
+# we've converted the dependent variables in Factor
 training_balanced_set$TARGET <- as.factor(training_balanced_set$TARGET)
 test_set$TARGET <- as.factor(test_set$TARGET)
 
@@ -264,7 +254,7 @@ test_set$TARGET <- as.factor(test_set$TARGET)
 table(test_set$TARGET)
 table(training_balanced_set$TARGET)
 
-## here we implement the random forest
+## here we've implemented the random forest
 
 RF_MODEL<-randomForest(TARGET ~ EXT_SOURCE_1 + EXT_SOURCE_2 + EXT_SOURCE_3 +
            AMT_INCOME_TOTAL + AMT_CREDIT + AMT_ANNUITY +
@@ -278,30 +268,63 @@ RF_MODEL<-randomForest(TARGET ~ EXT_SOURCE_1 + EXT_SOURCE_2 + EXT_SOURCE_3 +
 
 ```
 
+After the creation of the model we've fit the predictors using the function predict and than we crated a confusion matrix to analysi the performance of our models.
+
 
 ```{r Y hat creation}
+
+# The predictors
 y_hat_RF<-predict(RF_MODEL,test_set, type = "response")
 
-confusionMatrix(as.factor(y_hat_RF),test_set$TARGET, positive = "1") 
+# The Confusion matrix
+CFM_RF_Model<-confusionMatrix(as.factor(y_hat_RF),test_set$TARGET, positive = "1") 
+CFM_RF_Model
 
+## The Misclassification Rate
 MISCLASSRATE<-mean(y_hat_RF!=test_set$TARGET)
 MISCLASSRATE
+
+# roc courve
+
+pred_prob_Randomforest1<-predict(RF_MODEL,test_set,type = "prob")
+prob_official_RF<-pred_prob_Randomforest1[,-1]
+roc(test_set$TARGET,prob_official_RF, plot=TRUE,print.auc=TRUE)
 ```
+Model 1: Random Forest (Baseline)
+Performance: Accuracy: 67.9% | Sensitivity: 66.9% | Precision: 15.4% 
+
+"The baseline Random Forest model, trained on a balanced dataset, exhibits a strong bias towards Sensitivity (66.9%) compared to the original class distribution. While this ensures that a significant portion of defaulters are caught, the low Positive Predictive Value (Precision) of 15.4% indicates a high False Positive rate. The model is essentially 'over-flagging' risk to avoid missing defaults."
+
+The confusion matrix and the associated performance metrics highlight several structural limitations of the model. Although the overall accuracy is 0.678, this value should be interpreted with caution due to the strong class imbalance in the dataset, as indicated by the No Information Rate (0.92) and the low prevalence of the positive class (7.99%).
+
+The model exhibits a moderate sensitivity (0.669) and specificity (0.680), suggesting a balanced but limited ability to distinguish between default and non-default cases. However, the positive predictive value is particularly low (0.154), indicating a high proportion of false positives among the predicted default cases. This suggests that the model struggles to precisely identify true defaulters, which is a critical limitation in credit risk applications.
+
+Moreover, the Kappa statistic (0.138) reflects only a slight agreement beyond chance, reinforcing the conclusion that the predictive performance is constrained by the current feature set and model configuration. The misclassification rate of 32.13% further confirms that a substantial portion of observations is incorrectly classified, pointing to the need for structural improvements.
+
+Overall, these results suggest that while the model captures some discriminatory information, its performance could be significantly enhanced through feature engineering, class imbalance handling techniques (such as resampling or cost-sensitive learning), and further hyperparameter optimization. Improving the model’s ability to correctly identify the minority class is particularly important to reduce false positive and false negative errors in a credit default prediction context.
+
+
 ```{r}
-# Lista delle colonne da controllare
+# List of columns to check
 vars_to_check <- c("Total_credit", "Total_debt", "Mean_dpd", "Mean_utilization", "Mean_overdue")
 
-# Controllo NAs
+# Control NAs
 sapply(training_balanced_set[ , vars_to_check], function(x) sum(is.na(x)))
 
-# Controllo Inf o -Inf
+# Control Inf o -Inf
 sapply(training_balanced_set[ , vars_to_check], function(x) sum(!is.finite(x)))
 
 
 
 ```
 
-## second model RAndom forest
+After a data quality assessment, we analyzed the presence of missing values across the engineered features. The results showed that Total_credit, Total_debt, Mean_dpd, and Mean_overdue contained no missing values, while Mean_utilization exhibited 86 missing observations.
+
+Given the importance of data completeness for model stability and to avoid potential bias introduced by imputation, we decided to exclude the feature Mean_dpd from the final feature set. This decision was driven by the need to simplify the model and reduce redundancy among credit behavior indicators, while retaining variables with complete and reliable information.
+
+Feature selection at this stage aimed to improve model robustness and interpretability, ensuring that the learning algorithm was trained on variables with consistent data availability and minimal noise.
+
+## Second model Random Forest
 
 ```{r The second random forest}
 
@@ -322,30 +345,61 @@ RF_MODEL_2 <- randomForest(
 
 
 
-```{r}
-# Tutti i nomi delle colonne
-all_vars <- colnames(training_balanced_set)
-
-# Stampa per controllare
-print(all_vars)
-
-```
-
-
-
-
-
 ```{r Y hat creation 2}
+
+# Predictors
 y_hat_RF2<-predict(RF_MODEL_2, test_set, type = "response")
 
-CFM_RF_2<-confusionMatrix(as.factor(y_hat_RF2),test_set$TARGET)
+
+# The Confusion matrix
+CFM_RF_2<-confusionMatrix(as.factor(y_hat_RF2),test_set$TARGET, positive = "1")
 
 CFM_RF_2
 
+#Misclassratio
+
+Misclassratio_model2<-mean(y_hat_RF2!=test_set$TARGET)
+
 varImpPlot(RF_MODEL_2)
 ```
-
 ```{r}
+pred_prob_Randomforest2<-predict(RF_MODEL_2,test_set,type="prob")
+prob_official_RF2<-pred_prob_Randomforest2[,-1]
+roc(test_set$TARGET,prob_official_RF2, plot=TRUE, print.auc=TRUE)
+```
+
+Compared to the previous model, RF_MODEL_2 shows a slight improvement in overall performance, with accuracy increasing from approximately 0.679 to 0.682 and balanced accuracy reaching 0.678. Sensitivity and specificity are both marginally higher, indicating a more consistent ability to distinguish between default and non-default cases.
+
+The confusion matrix confirms a small reduction in false negatives and a slight increase in true positives, while the positive predictive value remains low. This suggests that, although the model’s capacity to identify defaulters has improved, challenges related to class imbalance persist.
+
+The feature importance plot highlights a stable dominance of external credit scores (EXT_SOURCE_2 and EXT_SOURCE_3), followed by demographic and financial variables such as DAYS_BIRTH, AMT_ANNUITY, and AMT_CREDIT. The removal of less informative variables appears to have contributed to a more focused and interpretable model, without negatively affecting predictive performance.
+
+Overall, the results indicate incremental but meaningful improvements, while confirming the need for further strategies to better address minority class prediction.
+
+
+Model 2: Random Forest (Refined Features)
+Performance: Accuracy: 68.2% | Sensitivity: 67.5% | AUC: 0.74
+# Feature Engineering and Robust Imputation Strategy
+
+In this phase, we performed feature engineering and data preprocessing to enhance the predictive capability of the model and improve numerical stability. Specifically, we constructed ratio-based variables such as debt_ratio and annuity_ratio, which capture the relative financial burden of applicants and are commonly used indicators in credit risk modeling.
+
+Features:
+
+- debt ratio
+
+- annuity_ratio
+
+Additionally, we transformed time-related variables into more interpretable units by converting DAYS_BIRTH and DAYS_EMPLOYED into age in years and employment duration in years, respectively. These transformations improve interpretability while preserving the underlying information.
+
+Features:
+
+- age_years
+
+- employment_years
+
+To manage missing and non-finite values, we applied median imputation to all numerical features. This approach was chosen for its robustness to outliers and its suitability for skewed financial distributions. The same feature engineering steps were consistently applied to both the training and test sets to ensure comparability between datasets.
+
+```{r featurs Managing}
 
 
 training_balanced_set$debt_ratio <- training_balanced_set$Total_debt / training_balanced_set$Total_credit
@@ -353,7 +407,7 @@ training_balanced_set$annuity_ratio <- training_balanced_set$AMT_ANNUITY / train
 training_balanced_set$age_years <- -training_balanced_set$DAYS_BIRTH / 365
 training_balanced_set$employment_years <- training_balanced_set$DAYS_EMPLOYED / 365
 
-# 2 managing the NA
+#  managing the NA
 num_vars <- c("Total_credit", "Total_debt", "AMT_CREDIT", "AMT_ANNUITY",
               "debt_ratio", "annuity_ratio", "age_years", "employment_years")
 
@@ -362,7 +416,7 @@ training_balanced_set[num_vars] <- lapply(training_balanced_set[num_vars], funct
   x
 })
 
-#  feature sul test set
+#  features on the test set
 test_set$debt_ratio <- test_set$Total_debt / test_set$Total_credit
 test_set$annuity_ratio <- test_set$AMT_ANNUITY / test_set$AMT_CREDIT
 test_set$age_years <- -test_set$DAYS_BIRTH / 365
@@ -373,7 +427,7 @@ num_vars_test <- c("Total_credit", "Total_debt", "AMT_CREDIT", "AMT_ANNUITY",
                    "debt_ratio", "annuity_ratio", "age_years", "employment_years")
 
 test_set[num_vars_test] <- lapply(test_set[num_vars_test], function(x) {
-  x[is.na(x) | !is.finite(x)] <- median(x, na.rm = TRUE)  # mediana calcolata sul test set
+  x[is.na(x) | !is.finite(x)] <- median(x, na.rm = TRUE)  
   x
 })
 
@@ -384,10 +438,18 @@ if("TARGET" %in% colnames(test_set)){
 
 ```
 
+## Random Forest model 3 with application of ratio-based features
+
+After implementing ratio-based features, the Random Forest model was re-estimated to improve both model stability and predictive accuracy. The inclusion of financial ratios and transformed demographic variables allows the model to better capture nonlinear relationships and relative credit risk dynamics.
+
+The model was trained using 500 trees, ensuring stable predictions through variance reduction, while setting mtry = 3 helped control model complexity and reduce overfitting. Overall, this specification aims to leverage the enriched feature set to enhance discrimination performance while maintaining robustness on a balanced training dataset.
+
+
 ```{r random forest model 3}
+
+# Thrid random forest 
 RF_MODEL_3<- randomForest(TARGET  ~ EXT_SOURCE_1 + EXT_SOURCE_2 + EXT_SOURCE_3 +
-    AMT_INCOME_TOTAL + AMT_CREDIT + AMT_ANNUITY + Total_credit + Total_debt + Mean_dpd + Mean_overdue +
-    DAYS_BIRTH +NAME_CONTRACT_TYPE + CODE_GENDER + NAME_EDUCATION_TYPE + NAME_FAMILY_STATUS +
+    AMT_INCOME_TOTAL + AMT_CREDIT + AMT_ANNUITY + Total_credit + Total_debt + Mean_dpd + Mean_overdue +NAME_CONTRACT_TYPE + CODE_GENDER + NAME_EDUCATION_TYPE + NAME_FAMILY_STATUS +
     FLAG_OWN_CAR + FLAG_OWN_REALTY + CNT_CHILDREN +debt_ratio+annuity_ratio+age_years+employment_years+
     REGION_POPULATION_RELATIVE,
   data = training_balanced_set,
@@ -397,20 +459,48 @@ RF_MODEL_3<- randomForest(TARGET  ~ EXT_SOURCE_1 + EXT_SOURCE_2 + EXT_SOURCE_3 +
 ```
 
 ```{r}
+# predictos
 y_hat_RF3<-predict(RF_MODEL_3,test_set, type="response")
 
-CFM_RF_3<-confusionMatrix(as.factor(y_hat_RF3),test_set$TARGET)
-```
+# Confusion matrix
+CFM_RF_3<-confusionMatrix(as.factor(y_hat_RF3),test_set$TARGET, positive="1")
 
-
-```{r}
 CFM_RF_3
+
+# plot
 varImpPlot(RF_MODEL_3)
 
 ```
+
+
+
+
+
+The introduction of ratio-based features (debt_ratio, annuity_ratio) and domain-specific transformations (age_years) resulted in the most stable Random Forest variant. While the AUC improvement was modest (0.7403), the model maintained consistent sensitivity. This suggests that while these ratios are theoretically sound, they are highly correlated with existing features, limiting their additive predictive value. 
+
+Model 3: Random Forest (Feature Engineering)
+Performance: Accuracy: 68.7% | AUC: 0.742
+
+```{r}
+library(pROC)
+pred_prob_Randomforest3<-predict(RF_MODEL_3,test_set, type = "prob")
+
+pred_offrf3<-pred_prob_Randomforest3[,-1]
+
+roc(test_set$TARGET, pred_offrf3, plot=TRUE,print.auc=TRUE)
+```
+"The baseline Random Forest model, trained on a balanced dataset, exhibits a strong bias towards Sensitivity (66.9%) compared to the original class distribution. While this ensures that a significant portion of defaulters are caught, the low Positive Predictive Value (Precision) of 15.4% indicates a high False Positive rate. The model is essentially 'over-flagging' risk to avoid missing defaults
+
+
 ## XGBoost
 
-we try to use this algoritmic 
+
+The ROC curves across all models display a consistent performance with Area Under the Curve (AUC) values ranging between 0.737 and 0.763. This indicates a moderate discriminatory power, meaning the models are generally capable of ranking defaulting customers higher than non-defaulting ones. However, the curves suggest that while the models capture the signal, there is still significant overlap between the classes, preventing a sharper separation."
+
+Specific Model Comparisons (ROC):
+
+The Random Forest models (RF1, RF2, RF3) showed stable AUC values plateauing around 0.74. Feature engineering provided marginal gains (improving from 0.737 to 0.7403), suggesting that the current feature set may have reached its limit in terms of linear/tree-based separability.
+
 
 ```{r}
 
@@ -424,6 +514,8 @@ feature_vars <- c("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3",
                   "FLAG_OWN_CAR", "FLAG_OWN_REALTY", "CNT_CHILDREN",
                   "debt_ratio", "annuity_ratio", "age_years", "employment_years",
                   "REGION_POPULATION_RELATIVE")
+
+# train matrix for XGboost
 train_matrix <- sparse.model.matrix(
   TARGET ~ .,
   data = training_balanced_set[, c(feature_vars, "TARGET")]
@@ -431,21 +523,26 @@ train_matrix <- sparse.model.matrix(
 
 train_label <- as.numeric(training_balanced_set$TARGET) - 1  # 0/1
 
-# Se hai il test set:
+# to create the test set for xgboost:
 test_matrix <- sparse.model.matrix(
   ~ .,
   data = test_set[, feature_vars]
 )
+
 if("TARGET" %in% colnames(test_set)){
   test_label <- as.numeric(test_set$TARGET) - 1
 }
 
+
+## data train using XGB:matrix
 dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
 if(exists("test_label")){
   dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
 }else{
   dtest <- xgb.DMatrix(data = test_matrix)
 }
+
+
 
 params <- list(
   booster = "gbtree",
@@ -469,6 +566,10 @@ xgb_model <- xgb.train(
 )
 
 ```
+
+
+
+
 ```{r}
 pred_prob <- predict(xgb_model, dtest)
 
@@ -482,8 +583,8 @@ importance <- xgb.importance(model = xgb_model)
 xgb.plot.importance(importance)
 ```
 
-```{r}
-pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+```{r confusion matrix XGBOOST 1}
+pred_class <- ifelse(pred_prob > 0.8, 1, 0)
 pred_class <- factor(pred_class, levels = c(0,1))
 test_label_factor <- factor(test_label, levels = c(0,1))
 
@@ -491,6 +592,165 @@ test_label_factor <- factor(test_label, levels = c(0,1))
 conf_matrix <- confusionMatrix(pred_class, test_label_factor, positive = "1")
 print(conf_matrix)
 ```
+```{r}
+roc(test_set$TARGET, pred_prob,plot=TRUE,print.auc=TRUE)
+```
+
+
+The initial *XGBoost* model suffered from the severe class imbalance, yielding high accuracy but unacceptable sensitivity (~22%). However, the final Weighted *XGBoost* model successfully mitigated this by using scale_pos_weight. It achieved a better balance with 74.7% Accuracy and 57.3% Sensitivity. Although its sensitivity is lower than the Random Forest models, its higher Specificity (76.2%) makes it a more precise tool, generating fewer false alarms while still capturing a majority of the risk. 
+
+
+
+## Data preparation and Weight
+
+```{r}
+training_set <- training_set %>%
+  mutate(
+    debt_ratio = Total_debt / Total_credit,
+    annuity_ratio = AMT_ANNUITY / AMT_CREDIT,
+    age_years = -DAYS_BIRTH / 365,
+    employment_years = DAYS_EMPLOYED / 365
+  )
+
+test_set <- test_set %>%
+  mutate(
+    debt_ratio = Total_debt / Total_credit,
+    annuity_ratio = AMT_ANNUITY / AMT_CREDIT,
+    age_years = -DAYS_BIRTH / 365,
+    employment_years = DAYS_EMPLOYED / 365
+  )
+
+# Replace Inf / -Inf with NA
+training_set <- training_set %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.infinite(.), NA, .)))
+
+test_set <- test_set %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.infinite(.), NA, .)))
+
+
+
+```
+
+
+# NA & INF HANDLING
+
+
+```{r}
+num_vars <- c("Total_credit", "Total_debt", "AMT_CREDIT", "AMT_ANNUITY",
+              "debt_ratio", "annuity_ratio", "age_years", "employment_years")
+
+for (v in num_vars) {
+  med <- median(training_set[[v]], na.rm = TRUE)
+  training_set[[v]][!is.finite(training_set[[v]])] <- med
+  test_set[[v]][!is.finite(test_set[[v]])] <- med
+}
+```
+
+
+# MATRIX PREPARATION
+
+```{r}
+exclude_cols <- c("TARGET", "SK_ID_CURR")
+features <- setdiff(colnames(training_set), exclude_cols)
+
+X_train_full <- data.matrix(training_set[, features])
+y_train_full <- training_set$TARGET
+
+X_test <- data.matrix(test_set[, features])
+y_test <- test_set$TARGET
+
+```
+
+# Train and test split
+
+```{r}
+set.seed(123)
+train_idx <- createDataPartition(y_train_full, p = 0.8, list = FALSE)
+
+X_train <- X_train_full[train_idx, ]
+y_train <- y_train_full[train_idx]
+
+X_val <- X_train_full[-train_idx, ]
+y_val <- y_train_full[-train_idx]
+
+
+dtrain <- xgb.DMatrix(X_train, label = y_train)
+dval   <- xgb.DMatrix(X_val, label = y_val)
+dtest  <- xgb.DMatrix(X_test, label = y_test)
+
+
+neg <- sum(y_train == 0)
+pos <- sum(y_train == 1)
+scale_weight <- neg / pos
+
+
+```
+
+```{r}
+params <- list(
+  booster = "gbtree",
+  objective = "binary:logistic",
+  eval_metric = "auc",
+  eta = 0.05,
+  max_depth = 6,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  scale_pos_weight = scale_weight
+)
+
+watchlist <- list(train = dtrain, val = dval)
+
+xgb_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 1000,
+  watchlist = watchlist,
+  early_stopping_rounds = 50,
+  print_every_n = 50,
+  maximize = TRUE
+)
+
+
+
+pred_val <- predict(xgb_model, dval)
+
+thresholds <- seq(0.1, 0.9, by = 0.02)
+best_f1 <- 0
+best_thresh <- 0.5
+
+```
+
+The XGBoost model (Weighted) achieved the highest AUC during validation (~0.763), outperforming the Random Forest approach. This suggests that the gradient boosting algorithm, combined with class-weight adjustments (scale_pos_weight), was more effective at navigating the complex decision boundary of this imbalanced dataset.
+
+```{r confusion matrix xgboost 2}
+pred_test_class <- predict(xgb_model, dtest)
+
+pred_test_class_official <- predict(xgb_model, dtest, type="prob")
+
+length(pred_test_class)
+length(test_set$TARGET)
+
+y_hat_XGBoost<-ifelse(pred_test_class>0.4,"1","0")
+
+
+CFM_XGBOOST<-confusionMatrix(as.factor(y_hat_XGBoost),test_set$TARGET, positive="1")
+
+CFM_XGBOOST 
+```
+
+
+
+```{r Roc curve for xgb models}
+roc_curve_XGBoost<-roc(test_set$TARGET,pred_test_class_official, plot=TRUE, print.auc=TRUE)
+
+table(test_set$TARGET)
+
+```
+
+
+# Conclusion
+
+In conclusion, while the Random Forest models maximized the detection of defaulters (high Sensitivity), they incurred a high cost in False Positives. The Weighted XGBoost provided the most balanced approach, offering the best trade-off between identifying risk and maintaining operational efficiency (higher Specificity and Accuracy). Future improvements should focus on advanced threshold tuning or ensemble methods to boost Precision without sacrificing Recall.
 
 
 
