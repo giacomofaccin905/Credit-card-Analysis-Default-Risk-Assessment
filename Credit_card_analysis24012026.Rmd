@@ -17,9 +17,9 @@ library(pROC)
 ```
 
 
-## Data Dawnload
+## Data Download
 
-```{r Data dawnload}
+```{r Data download}
 
 credit_card_balanced<-read.csv("credit_card_balance.csv")
 bureau_data<-read.csv("bureau.csv")
@@ -105,6 +105,7 @@ str(Data_set$TARGET)
 ## EDA
 
 The variable target has been investigated with a bar plot, it pretty evident that there is a problem of *Class Imbalance*.
+
 The variable *AMT_INCOME_TOTAL* had been explored before it was analyzed to under how it was distributed. 
 
 ```{r}
