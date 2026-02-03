@@ -17,9 +17,9 @@ library(pROC)
 ```
 
 
-## Data Dawnload
+## Data Download
 
-```{r Data dawnload}
+```{r Data download}
 
 credit_card_balanced<-read.csv("credit_card_balance.csv")
 bureau_data<-read.csv("bureau.csv")
