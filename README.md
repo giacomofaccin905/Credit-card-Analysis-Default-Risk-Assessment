@@ -100,7 +100,7 @@ install.packages(c("dplyr", "ggplot2", "tidyr", "pROC",
 
 ---
 
-## 👤 Author
+##  Author
 
 **Giacomo Faccin**  
 Master's Degree in Data Analytics for Business and Society — Fintech & Bigtech track  
